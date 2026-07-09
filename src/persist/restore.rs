@@ -417,6 +417,7 @@ fn restore_workspace(
             next_public_pane_number,
             next_public_tab_number,
             active_tab: snap.active_tab.min(tabs.len().saturating_sub(1)),
+            previous_active_tab: None,
             tabs,
             #[cfg(test)]
             test_runtimes: HashMap::new(),
