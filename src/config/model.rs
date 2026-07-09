@@ -123,14 +123,6 @@ pub enum SidebarCollapsedModeConfig {
     Hidden,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TabBarPositionConfig {
-    #[default]
-    Top,
-    Bottom,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RightClickPassthroughModifierConfig(Option<KeyModifiers>);
 
@@ -826,8 +818,6 @@ pub struct UiConfig {
     pub show_agent_labels_on_pane_borders: bool,
     /// Hide the tab row when the workspace has one tab. Default: false.
     pub hide_tab_bar_when_single_tab: bool,
-    /// Tab row placement above or below the terminal area. Default: "top".
-    pub tab_bar_position: TabBarPositionConfig,
     /// Agent sidebar ordering. Saved values are "spaces" or "priority". Default: "spaces".
     pub agent_panel_sort: AgentPanelSortConfig,
     /// Accent color for highlights, borders, and navigation UI.
@@ -1023,7 +1013,6 @@ impl Default for UiConfig {
             pane_gaps: true,
             show_agent_labels_on_pane_borders: false,
             hide_tab_bar_when_single_tab: false,
-            tab_bar_position: TabBarPositionConfig::default(),
             agent_panel_sort: AgentPanelSortConfig::Spaces,
             accent: "cyan".into(),
             toast: ToastConfig::default(),
