@@ -1426,6 +1426,27 @@ fn action_for_key(
         .or_else(|| indexed_navigation_action(state, key, dispatch))
 }
 
+impl AppState {
+    /// The key hint to show for "send prefix" in the prefix-mode overlay.
+    ///
+    /// Prefers an explicit `send_prefix` binding when one is set. Otherwise
+    /// falls back to the prefix key itself, but only when double-pressing it
+    /// still passes a literal prefix through: if the user has rebound
+    /// prefix+prefix to another action, the double-press no longer sends the
+    /// prefix, so there is no hint to show.
+    pub(crate) fn send_prefix_hint(&self) -> Option<String> {
+        if let Some(label) = self.keybinds.send_prefix.prefix_rhs_label() {
+            return Some(label);
+        }
+        let prefix_key = TerminalKey::new(self.prefix_code, self.prefix_mods);
+        let double_press_sends_literal =
+            non_indexed_action_for_key(self, prefix_key, BindingDispatch::Prefix).is_none()
+                && indexed_navigation_action(self, prefix_key, BindingDispatch::Prefix).is_none();
+        double_press_sends_literal
+            .then(|| crate::config::format_key_combo((self.prefix_code, self.prefix_mods)))
+    }
+}
+
 fn non_indexed_action_for_key(
     state: &AppState,
     key: TerminalKey,
@@ -2529,6 +2550,54 @@ edit_scrollback = "prefix+shift+e"
         );
 
         assert_eq!(action, Some(NavigateAction::SendPrefix));
+    }
+
+    #[test]
+    fn send_prefix_hint_defaults_to_prefix_key_double_press() {
+        // Default config: no send_prefix binding, prefix+prefix unbound, so
+        // double-pressing the prefix still sends a literal prefix.
+        let state = state_with_workspaces(&["test"]);
+        let expected = crate::config::format_key_combo((state.prefix_code, state.prefix_mods));
+        assert_eq!(state.send_prefix_hint(), Some(expected));
+    }
+
+    #[test]
+    fn send_prefix_hint_prefers_explicit_send_prefix_binding() {
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+prefix = "backtick"
+last_tab = "prefix+backtick"
+send_prefix = "prefix+e"
+"#,
+        )
+        .unwrap();
+        let mut state = state_with_workspaces(&["test"]);
+        state.keybinds = config.keybinds();
+        state.prefix_code = KeyCode::Char('`');
+        state.prefix_mods = KeyModifiers::empty();
+
+        assert_eq!(state.send_prefix_hint(), Some("e".to_string()));
+    }
+
+    #[test]
+    fn send_prefix_hint_hidden_when_double_press_rebound_without_send_prefix() {
+        // prefix+prefix is claimed by last_tab and no send_prefix is set, so
+        // there is no key that sends a literal prefix; the hint disappears.
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+prefix = "backtick"
+last_tab = "prefix+backtick"
+"#,
+        )
+        .unwrap();
+        let mut state = state_with_workspaces(&["test"]);
+        state.keybinds = config.keybinds();
+        state.prefix_code = KeyCode::Char('`');
+        state.prefix_mods = KeyModifiers::empty();
+
+        assert_eq!(state.send_prefix_hint(), None);
     }
 
     #[test]

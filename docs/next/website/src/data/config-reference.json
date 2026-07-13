@@ -386,6 +386,12 @@
           "description": "Select the next tab."
         },
         {
+          "key": "keys.last_tab",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Toggle to the previously active tab in the workspace (tmux last-window). Unset by default."
+        },
+        {
           "key": "keys.switch_tab",
           "type": "keybinding",
           "default": "\"prefix+1..9\"",
@@ -486,6 +492,12 @@
           "type": "keybinding",
           "default": "unset",
           "description": "Focus the last focused pane across workspaces and tabs. Unset by default."
+        },
+        {
+          "key": "keys.send_prefix",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Send a literal prefix keypress to the focused pane (tmux send-prefix), useful when the prefix is a printable key. Unset by default."
         },
         {
           "key": "keys.split_vertical",
