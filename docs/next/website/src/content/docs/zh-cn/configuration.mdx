@@ -5,13 +5,18 @@ description: 配置 Herdr 的按键绑定、主题、侧边栏行为、通知和
 
 Herdr 无需配置文件即可工作。当你想要自定义按键、主题、侧边栏设置、通知或高级行为时再添加。
 
+在找某个具体的键？[配置参考](/zh-cn/docs/config-reference/)列出了所有键的类型、默认值与允许的取值。
+
 ## 配置文件
 
 Herdr 从这里读取配置:
 
 ```text
-~/.config/herdr/config.toml
+Linux 和 macOS: ~/.config/herdr/config.toml
+Windows:         %APPDATA%\herdr\config.toml
 ```
+
+运行 `herdr --help` 可查看系统解析后的配置文件路径。
 
 打印完整的默认配置:
 
@@ -301,6 +306,7 @@ sidebar_min_width = 18
 sidebar_max_width = 36
 mobile_width_threshold = 64
 mouse_capture = true
+copy_on_select = true
 right_click_passthrough_modifier = ""
 redraw_on_focus_gained = true
 mouse_scroll_lines = 3
@@ -322,6 +328,8 @@ accent = "cyan"
 `confirm_close` 控制关闭工作区时是否需要确认。`prompt_new_tab_name` 控制新标签页是否先询问名称。
 
 如果想让终端处理普通点击,比如 command+点击 URL,设置 `mouse_capture = false`。鼠标捕获启用时,如果终端把带修饰键的点击传给 Herdr,Ctrl+点击可以打开窗格链接。macOS 也是如此;Herdr 捕获鼠标输入期间,Cmd+点击不会与普通点击区分上报。终端原生的绕过路径: Linux 上用 Shift+Ctrl+点击,macOS 上用 Shift+Cmd+点击。
+
+设置 `copy_on_select = false` 可禁用 Herdr 的鼠标拖动选择和双击单词复制。默认值为 `true`。
 
 如果想让 Ctrl+右键点击、按住和拖动手势到达启用鼠标上报的窗格应用,而不是打开 Herdr 的窗格菜单,设置 `right_click_passthrough_modifier = "ctrl"`。默认为空,即禁用这种透传。支持的修饰键有 `ctrl`、`alt`、`cmd`、`super`、`meta` 和 `hyper`;`shift` 被拒绝,因为许多终端把 Shift+鼠标保留给它们自己的鼠标绕过。
 
@@ -478,7 +486,7 @@ cjk_ime_cursor_shape = "steady_block"
 
 启用后,光标保持在聚焦窗格上报的位置可见。如果窗格没有上报光标位置,锚点回退到窗格左上角,保证始终有稳定的输入法提示位置。
 
-`cjk_ime_agents` 是可选的允许列表。为空时,该显示适用于任何聚焦窗格。非空时,只在聚焦窗格检测到的智能体匹配列表中某个名称时才生效 — 适合只对自绘光标的 AI 智能体 TUI 启用,而不影响普通 shell。接受的名称: `pi`、`claude`、`codex`、`gemini`、`cursor`、`devin`、`agy`、`cline`、`opencode`、`copilot`、`kimi`、`kiro`、`droid`、`amp`、`grok`、`hermes`、`kilo`、`qodercli` 和 `qoder`。未知名称被忽略;如果列表中没有有效名称,该显示不生效。
+`cjk_ime_agents` 是可选的允许列表。为空时,该显示适用于任何聚焦窗格。非空时,只在聚焦窗格检测到的智能体匹配列表中某个名称时才生效 — 适合只对自绘光标的 AI 智能体 TUI 启用,而不影响普通 shell。接受的名称: `pi`、`claude`、`codex`、`gemini`、`cursor`、`devin`、`agy`、`cline`、`opencode`、`copilot`、`kimi`、`kiro`、`droid`、`amp`、`grok`、`hermes`、`kilo`、`qodercli`、`qoder` 和 `maki`。未知名称被忽略;如果列表中没有有效名称,该显示不生效。
 
 `cjk_ime_cursor_shape` 控制为输入法锚点渲染的 DECSCUSR 形状。接受的值: `block`、`steady_block` (默认)、`underline`、`steady_underline`、`bar`、`steady_bar`。
 

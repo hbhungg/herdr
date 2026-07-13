@@ -844,19 +844,42 @@ pub(crate) struct NavigatorState {
     pub expanded_workspaces: std::collections::HashSet<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CopyModeState {
     pub pane_id: PaneId,
     pub cursor_row: u16,
     pub cursor_col: u16,
     pub entry_offset_from_bottom: usize,
     pub selection: Option<CopyModeSelection>,
+    pub search: CopyModeSearchState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CopyModeSelection {
     Character,
     Linewise { anchor_row: u32 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CopyModeSearchDirection {
+    Forward,
+    Backward,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CopyModeSearchPrompt {
+    pub direction: CopyModeSearchDirection,
+    pub query: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct CopyModeSearchState {
+    pub prompt: Option<CopyModeSearchPrompt>,
+    pub query: String,
+    pub direction: Option<CopyModeSearchDirection>,
+    pub matches: Vec<crate::pane::TerminalTextMatch>,
+    pub current: Option<usize>,
+    pub geometry: Option<(u16, u16)>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1384,6 +1407,7 @@ pub struct AppState {
     /// Capture mouse input for Herdr's own mouse UI. When false, Herdr only
     /// captures mouse while the focused pane app requests mouse reporting.
     pub mouse_capture: bool,
+    pub copy_on_select: bool,
     pub right_click_passthrough_modifiers: Option<KeyModifiers>,
     pub right_click_passthrough: Option<RightClickPassthroughGesture>,
     pub redraw_on_focus_gained: bool,
@@ -1742,6 +1766,7 @@ impl AppState {
             agent_panel_sort: AgentPanelSort::Spaces,
             next_agent_state_change_seq: 0,
             mouse_capture: true,
+            copy_on_select: true,
             right_click_passthrough_modifiers: None,
             right_click_passthrough: None,
             redraw_on_focus_gained: true,
