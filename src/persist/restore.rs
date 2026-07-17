@@ -413,6 +413,8 @@ fn restore_workspace(
             cached_git_ahead_behind: None,
             cached_git_space: crate::workspace::git_space_metadata(&snap.identity_cwd),
             worktree_space,
+            metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
+            metadata_token_sequences: HashMap::new(),
             public_pane_numbers,
             next_public_pane_number,
             next_public_tab_number,
@@ -1581,11 +1583,10 @@ mod tests {
             .next()
             .expect("restored runtime should exist");
 
+        let restored_text = runtime.recent_unwrapped_text(10);
         assert!(
-            runtime
-                .recent_unwrapped_text(10)
-                .contains("RESTORED_HISTORY"),
-            "saved history should be visible in the restored terminal backend"
+            restored_text.contains("RESTORED_HISTORY 👨‍👩‍👧 LINK"),
+            "styled Unicode and hyperlink text should survive history replay"
         );
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -1654,7 +1655,11 @@ mod tests {
                     panes: HashMap::from([(
                         0,
                         super::super::snapshot::PaneHistorySnapshot {
-                            ansi: "RESTORED_HISTORY\r\n".to_string(),
+                            ansi: concat!(
+                                "\x1b[31mRESTORED_HISTORY 👨‍👩‍👧\x1b[0m ",
+                                "\x1b]8;;https://example.com\x1b\\LINK\x1b]8;;\x1b\\\r\n"
+                            )
+                            .to_string(),
                             lines: 1,
                         },
                     )]),

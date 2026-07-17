@@ -425,6 +425,26 @@ fn workspace_list_and_create_round_trip() {
     );
     assert_eq!(fetched["result"]["workspace"]["workspace_id"], workspace_id);
 
+    let metadata = send_request(
+        &socket_path,
+        &format!(
+            r#"{{"id":"req_workspace_metadata","method":"workspace.report_metadata","params":{{"workspace_id":"{}","source":"user:test","tokens":{{"jj_status":"2 changes"}}}}}}"#,
+            workspace_id
+        ),
+    );
+    assert_eq!(metadata["result"]["type"], "ok");
+    let fetched = send_request(
+        &socket_path,
+        &format!(
+            r#"{{"id":"req_workspace_metadata_get","method":"workspace.get","params":{{"workspace_id":"{}"}}}}"#,
+            workspace_id
+        ),
+    );
+    assert_eq!(
+        fetched["result"]["workspace"]["tokens"]["jj_status"],
+        "2 changes"
+    );
+
     let panes = send_request(
         &socket_path,
         r#"{"id":"req_6","method":"pane.list","params":{}}"#,
@@ -710,7 +730,7 @@ fn pane_info_reports_foreground_cwd_without_changing_pane_cwd() {
         .unwrap()
         .to_string();
     let command = format!(
-        "/bin/sh -c 'cd {} && printf %s $$ > {} && touch {} && sleep 30'",
+        "/bin/sh -c 'cd {} && printf %s $$ > {} && touch {} && sleep 30; :'",
         foreground.display(),
         pid_file.display(),
         marker.display()
@@ -769,6 +789,33 @@ fn pane_info_reports_foreground_cwd_without_changing_pane_cwd() {
         panes["result"]["panes"][0]["foreground_cwd"],
         foreground.display().to_string()
     );
+
+    let process_info = send_request(
+        &socket_path,
+        &format!(
+            r#"{{"id":"fg_process_info","method":"pane.process_info","params":{{"pane_id":"{}"}}}}"#,
+            pane_id
+        ),
+    );
+    let process_info = &process_info["result"]["process_info"];
+    assert!(process_info["shell_pid"].is_number());
+    assert_eq!(process_info["foreground_process_group_id"], foreground_pid);
+    assert!(process_info.get("tty").is_none());
+    let foreground_processes = process_info["foreground_processes"].as_array().unwrap();
+    let foreground_shell = foreground_processes
+        .iter()
+        .find(|process| process["pid"] == foreground_pid)
+        .expect("foreground shell should be reported");
+    assert_eq!(foreground_shell["name"], "sh");
+    assert_eq!(foreground_shell["cwd"], foreground.display().to_string());
+    assert!(foreground_shell.get("argv0").is_none());
+    assert!(foreground_shell["argv"].is_array());
+    assert!(foreground_shell["cmdline"].is_string());
+    let foreground_sleep = foreground_processes
+        .iter()
+        .find(|process| process["name"] == "sleep" && process["pid"] != foreground_pid)
+        .expect("foreground sleep child should be reported separately");
+    assert_eq!(foreground_sleep["cwd"], foreground.display().to_string());
 
     let reported = send_request(
         &socket_path,
@@ -842,6 +889,144 @@ fn pane_info_reports_foreground_cwd_without_changing_pane_cwd() {
     );
     assert_eq!(
         explicit_tab["result"]["root_pane"]["cwd"],
+        base.display().to_string()
+    );
+
+    cleanup_spawned_herdr(child, base);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn new_terminal_cwd_follow_ignores_nonleader_group_member_cwd() {
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let helper_cwd = base.join("plugin-cache");
+    let helper_marker = base.join("helper-cwd-ready");
+    let marker = base.join("helper-ready");
+    let leader_pid_file = base.join("leader.pid");
+    let helper_pid_file = base.join("helper.pid");
+    fs::create_dir_all(&helper_cwd).unwrap();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let socket_path = runtime_dir.join("herdr.sock");
+
+    let child = spawn_herdr_with_shell(&config_home, &runtime_dir, &socket_path, "/bin/bash");
+    wait_for_socket(&socket_path, Duration::from_secs(5));
+
+    let created = send_request(
+        &socket_path,
+        &format!(
+            r#"{{"id":"member_ws","method":"workspace.create","params":{{"cwd":"{}","focus":true}}}}"#,
+            base.display()
+        ),
+    );
+    let pane_id = created["result"]["root_pane"]["pane_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let workspace_id = created["result"]["workspace"]["workspace_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let command = format!(
+        "/bin/sh -c 'printf %s $$ > {}; (cd {} && touch {} && sleep 30) & printf %s $! > {}; while [ ! -e {} ]; do sleep 0.01; done; touch {}; wait'",
+        leader_pid_file.display(),
+        helper_cwd.display(),
+        helper_marker.display(),
+        helper_pid_file.display(),
+        helper_marker.display(),
+        marker.display()
+    );
+    let send_text = send_request(
+        &socket_path,
+        &serde_json::json!({
+            "id": "member_send",
+            "method": "pane.send_text",
+            "params": {
+                "pane_id": pane_id,
+                "text": command,
+            },
+        })
+        .to_string(),
+    );
+    assert_eq!(send_text["result"]["type"], "ok");
+    let send_enter = send_request(
+        &socket_path,
+        &format!(
+            r#"{{"id":"member_enter","method":"pane.send_keys","params":{{"pane_id":"{}","keys":["Enter"]}}}}"#,
+            pane_id
+        ),
+    );
+    assert_eq!(send_enter["result"]["type"], "ok");
+    wait_for_path(&marker, Duration::from_secs(5));
+
+    let leader_pid: u32 = fs::read_to_string(&leader_pid_file)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let helper_pid: u32 = fs::read_to_string(&helper_pid_file)
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        unsafe { libc::getpgid(leader_pid as libc::pid_t) },
+        leader_pid as libc::pid_t
+    );
+    assert_eq!(
+        unsafe { libc::getpgid(helper_pid as libc::pid_t) },
+        leader_pid as libc::pid_t
+    );
+    assert_eq!(
+        fs::read_link(format!("/proc/{leader_pid}/cwd")).unwrap(),
+        base
+    );
+    assert_eq!(
+        fs::read_link(format!("/proc/{helper_pid}/cwd")).unwrap(),
+        helper_cwd
+    );
+
+    let pane = send_request(
+        &socket_path,
+        &format!(
+            r#"{{"id":"member_pane","method":"pane.get","params":{{"pane_id":"{}"}}}}"#,
+            pane_id
+        ),
+    );
+    assert_eq!(pane["result"]["pane"]["cwd"], base.display().to_string());
+    assert_eq!(
+        pane["result"]["pane"]["foreground_cwd"],
+        helper_cwd.display().to_string()
+    );
+
+    let split = send_request(
+        &socket_path,
+        &serde_json::json!({
+            "id": "member_split",
+            "method": "pane.split",
+            "params": {
+                "target_pane_id": pane_id,
+                "direction": "right",
+                "focus": false,
+            },
+        })
+        .to_string(),
+    );
+    assert_eq!(split["result"]["pane"]["cwd"], base.display().to_string());
+
+    let tab = send_request(
+        &socket_path,
+        &serde_json::json!({
+            "id": "member_tab",
+            "method": "tab.create",
+            "params": {
+                "workspace_id": workspace_id,
+                "focus": false,
+            },
+        })
+        .to_string(),
+    );
+    assert_eq!(
+        tab["result"]["root_pane"]["cwd"],
         base.display().to_string()
     );
 
@@ -1545,7 +1730,7 @@ fn pane_report_agent_updates_effective_state() {
     let metadata = send_request(
         &socket_path,
         &format!(
-            r#"{{"id":"req_hook_metadata","method":"pane.report_metadata","params":{{"pane_id":"{}","source":"user:pi-display","agent":"pi","applies_to_source":"herdr:pi","title":"Refactor auth","display_agent":"Pi auth","custom_status":"middleware","state_labels":{{"working":"deep in the mines"}}}}}}"#,
+            r#"{{"id":"req_hook_metadata","method":"pane.report_metadata","params":{{"pane_id":"{}","source":"user:pi-display","agent":"pi","applies_to_source":"herdr:pi","title":"Refactor auth","display_agent":"Pi auth","state_labels":{{"working":"deep in the mines"}},"tokens":{{"summary":"reviewing auth","model":"opus"}}}}}}"#,
             pane_id
         ),
     );
@@ -1562,11 +1747,15 @@ fn pane_report_agent_updates_effective_state() {
     assert_eq!(pane["result"]["pane"]["agent_status"], "working");
     assert_eq!(pane["result"]["pane"]["title"], "Refactor auth");
     assert_eq!(pane["result"]["pane"]["display_agent"], "Pi auth");
-    assert_eq!(pane["result"]["pane"]["custom_status"], "middleware");
     assert_eq!(
         pane["result"]["pane"]["state_labels"]["working"],
         "deep in the mines"
     );
+    assert_eq!(
+        pane["result"]["pane"]["tokens"]["summary"],
+        "reviewing auth"
+    );
+    assert_eq!(pane["result"]["pane"]["tokens"]["model"], "opus");
 
     let agent = send_request(
         &socket_path,
@@ -1585,28 +1774,20 @@ fn pane_report_agent_updates_effective_state() {
     );
     assert_eq!(agent["result"]["agent"]["title"], "Refactor auth");
     assert_eq!(agent["result"]["agent"]["display_agent"], "Pi auth");
-    assert_eq!(agent["result"]["agent"]["custom_status"], "middleware");
     assert_eq!(
         agent["result"]["agent"]["state_labels"]["working"],
         "deep in the mines"
     );
-
-    let invalid_metadata = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"req_hook_metadata_invalid","method":"pane.report_metadata","params":{{"pane_id":"{}","source":"user:pi-display","custom_status":"x","clear_custom_status":true}}}}"#,
-            pane_id
-        ),
-    );
     assert_eq!(
-        invalid_metadata["error"]["code"],
-        "invalid_metadata_request"
+        agent["result"]["agent"]["tokens"]["summary"],
+        "reviewing auth"
     );
+    assert_eq!(agent["result"]["agent"]["tokens"]["model"], "opus");
 
     let blank_source_metadata = send_request(
         &socket_path,
         &format!(
-            r#"{{"id":"req_hook_metadata_blank_source","method":"pane.report_metadata","params":{{"pane_id":"{}","source":"   ","custom_status":"x"}}}}"#,
+            r#"{{"id":"req_hook_metadata_blank_source","method":"pane.report_metadata","params":{{"pane_id":"{}","source":"   ","title":"x"}}}}"#,
             pane_id
         ),
     );
@@ -1630,7 +1811,7 @@ fn pane_report_agent_updates_effective_state() {
     let blank_authority_source_metadata = send_request(
         &socket_path,
         &format!(
-            r#"{{"id":"req_hook_metadata_blank_authority_source","method":"pane.report_metadata","params":{{"pane_id":"{}","source":"user:pi-display","applies_to_source":"   ","custom_status":"x"}}}}"#,
+            r#"{{"id":"req_hook_metadata_blank_authority_source","method":"pane.report_metadata","params":{{"pane_id":"{}","source":"user:pi-display","applies_to_source":"   ","title":"x"}}}}"#,
             pane_id
         ),
     );
@@ -2277,7 +2458,7 @@ fn metadata_status_subscription_filter_and_ttl_expiry_are_observable() {
     let metadata = send_request(
         &socket_path,
         &format!(
-            r#"{{"id":"req_meta_sub_3","method":"pane.report_metadata","params":{{"pane_id":"{}","source":"user:pi-display","agent":"pi","applies_to_source":"herdr:pi","custom_status":"filtered out"}}}}"#,
+            r#"{{"id":"req_meta_sub_3","method":"pane.report_metadata","params":{{"pane_id":"{}","source":"user:pi-display","agent":"pi","applies_to_source":"herdr:pi","title":"filtered out"}}}}"#,
             pane_id
         ),
     );
@@ -2303,7 +2484,7 @@ fn metadata_status_subscription_filter_and_ttl_expiry_are_observable() {
     let metadata = send_request(
         &socket_path,
         &format!(
-            r#"{{"id":"req_meta_sub_4","method":"pane.report_metadata","params":{{"pane_id":"{}","source":"user:pi-display","agent":"pi","applies_to_source":"herdr:pi","custom_status":"short lived","ttl_ms":100}}}}"#,
+            r#"{{"id":"req_meta_sub_4","method":"pane.report_metadata","params":{{"pane_id":"{}","source":"user:pi-display","agent":"pi","applies_to_source":"herdr:pi","title":"short lived","ttl_ms":100}}}}"#,
             pane_id
         ),
     );
@@ -2314,14 +2495,14 @@ fn metadata_status_subscription_filter_and_ttl_expiry_are_observable() {
     assert_eq!(set_event["data"]["pane_id"], pane_id);
     assert_eq!(set_event["data"]["agent_status"], "working");
     assert_eq!(set_event["data"]["agent"], "pi");
-    assert_eq!(set_event["data"]["custom_status"], "short lived");
+    assert_eq!(set_event["data"]["title"], "short lived");
 
     let expiry_event = reader.read_json_line(Duration::from_secs(3));
     assert_eq!(expiry_event["event"], "pane.agent_status_changed");
     assert_eq!(expiry_event["data"]["pane_id"], pane_id);
     assert_eq!(expiry_event["data"]["agent_status"], "working");
     assert_eq!(expiry_event["data"]["agent"], "pi");
-    assert!(expiry_event["data"]["custom_status"].is_null());
+    assert!(expiry_event["data"]["title"].is_null());
 
     cleanup_spawned_herdr(child, base);
 }
