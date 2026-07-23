@@ -1830,6 +1830,25 @@ impl AppState {
         }
     }
 
+    /// Toggle back to the previously active tab in the active workspace,
+    /// tmux `last-window` style. Production dispatch goes through
+    /// `focus_tab_idx_via_api`; this state-level twin serves tests, like
+    /// `switch_tab` above.
+    #[cfg(test)]
+    pub fn last_tab(&mut self) {
+        let Some(ws_idx) = self.active else {
+            return;
+        };
+        let Some(tab_idx) = self
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.last_tab_index())
+        else {
+            return;
+        };
+        self.switch_workspace_tab(ws_idx, tab_idx);
+    }
+
     pub(crate) fn apply_pane_zoom(
         &mut self,
         ws_idx: usize,
@@ -4188,6 +4207,20 @@ mod tests {
         state.last_pane();
 
         assert_eq!(state.workspaces[0].focused_pane_id(), Some(right));
+    }
+
+    #[test]
+    fn last_tab_toggles_to_previously_active_tab() {
+        let mut state = app_with_workspaces(&["test"]);
+        let second = state.workspaces[0].test_add_tab(Some("two"));
+        state.switch_workspace_tab(0, second);
+        state.switch_workspace_tab(0, 0);
+
+        state.last_tab();
+        assert_eq!(state.workspaces[0].active_tab, second);
+
+        state.last_tab();
+        assert_eq!(state.workspaces[0].active_tab, 0);
     }
 
     #[test]

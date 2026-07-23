@@ -61,21 +61,13 @@ impl App {
         let key = raw_key.as_key_event();
         self.state.update_dismissed = true;
 
-        if self.state.is_prefix_key(raw_key) {
-            if self.state.copy_mode_pane_is_focused() {
-                self.state.cancel_copy_mode(&self.terminal_runtimes);
-            }
-            if !self.pass_through_key_to_focused_pane(raw_key) {
-                leave_command_mode(&mut self.state);
-            }
-            return;
-        }
-
-        if key.code == KeyCode::Esc {
+        if key.code == KeyCode::Esc && !self.state.is_prefix_key(raw_key) {
             leave_command_mode(&mut self.state);
             return;
         }
 
+        // Explicit bindings win, even on the prefix key itself; an unbound
+        // prefix double-press falls through to the literal passthrough below.
         if let Some(action) =
             non_indexed_action_for_key(&self.state, raw_key, BindingDispatch::Prefix)
         {
@@ -93,6 +85,16 @@ impl App {
             indexed_navigation_action(&self.state, raw_key, BindingDispatch::Prefix)
         {
             self.execute_prefix_key_action(action);
+            return;
+        }
+
+        if self.state.is_prefix_key(raw_key) {
+            if self.state.copy_mode_pane_is_focused() {
+                self.state.cancel_copy_mode(&self.terminal_runtimes);
+            }
+            if !self.pass_through_key_to_focused_pane(raw_key) {
+                leave_command_mode(&mut self.state);
+            }
             return;
         }
 
@@ -316,6 +318,17 @@ impl App {
                     leave_navigate_mode(&mut self.state);
                 }
             }
+            NavigateAction::LastTab => {
+                if let Some(tab_idx) = self
+                    .state
+                    .active
+                    .and_then(|ws_idx| self.state.workspaces.get(ws_idx))
+                    .and_then(|ws| ws.last_tab_index())
+                {
+                    self.focus_tab_idx_via_api(tab_idx);
+                }
+                leave_navigate_mode(&mut self.state);
+            }
             NavigateAction::CloseTab => {
                 if !self.close_active_tab_via_api_requires_confirmation() {
                     leave_navigate_mode(&mut self.state);
@@ -388,6 +401,12 @@ impl App {
             NavigateAction::LastPane => {
                 self.last_pane_via_api();
                 leave_navigate_mode(&mut self.state);
+            }
+            NavigateAction::SendPrefix => {
+                let prefix_key = TerminalKey::new(self.state.prefix_code, self.state.prefix_mods);
+                if !self.pass_through_key_to_focused_pane(prefix_key) {
+                    leave_command_mode(&mut self.state);
+                }
             }
             NavigateAction::Help => super::modal::open_keybind_help(&mut self.state),
             NavigateAction::Settings => super::settings::open_settings(&mut self.state),
@@ -1302,6 +1321,7 @@ pub(crate) enum NavigateAction {
     RenameTab,
     PreviousTab,
     NextTab,
+    LastTab,
     CloseTab,
     RenamePane,
     FocusPaneLeft,
@@ -1323,6 +1343,7 @@ pub(crate) enum NavigateAction {
     CyclePaneNext,
     CyclePanePrevious,
     LastPane,
+    SendPrefix,
     Help,
     Settings,
     ReloadConfig,
@@ -1343,6 +1364,7 @@ fn copy_mode_survives_prefix_action(action: NavigateAction) -> bool {
             | NavigateAction::NextAgent
             | NavigateAction::PreviousTab
             | NavigateAction::NextTab
+            | NavigateAction::LastTab
             | NavigateAction::FocusPaneLeft
             | NavigateAction::FocusPaneDown
             | NavigateAction::FocusPaneUp
@@ -1411,6 +1433,27 @@ fn action_for_key(
         .or_else(|| indexed_navigation_action(state, key, dispatch))
 }
 
+impl AppState {
+    /// The key hint to show for "send prefix" in the prefix-mode overlay.
+    ///
+    /// Prefers an explicit `send_prefix` binding when one is set. Otherwise
+    /// falls back to the prefix key itself, but only when double-pressing it
+    /// still passes a literal prefix through: if the user has rebound
+    /// prefix+prefix to another action, the double-press no longer sends the
+    /// prefix, so there is no hint to show.
+    pub(crate) fn send_prefix_hint(&self) -> Option<String> {
+        if let Some(label) = self.keybinds.send_prefix.prefix_rhs_label() {
+            return Some(label);
+        }
+        let prefix_key = TerminalKey::new(self.prefix_code, self.prefix_mods);
+        let double_press_sends_literal =
+            non_indexed_action_for_key(self, prefix_key, BindingDispatch::Prefix).is_none()
+                && indexed_navigation_action(self, prefix_key, BindingDispatch::Prefix).is_none();
+        double_press_sends_literal
+            .then(|| crate::config::format_key_combo((self.prefix_code, self.prefix_mods)))
+    }
+}
+
 fn non_indexed_action_for_key(
     state: &AppState,
     key: TerminalKey,
@@ -1435,6 +1478,7 @@ fn non_indexed_action_for_key(
         (&kb.rename_tab, NavigateAction::RenameTab),
         (&kb.previous_tab, NavigateAction::PreviousTab),
         (&kb.next_tab, NavigateAction::NextTab),
+        (&kb.last_tab, NavigateAction::LastTab),
         (&kb.close_tab, NavigateAction::CloseTab),
         (&kb.rename_pane, NavigateAction::RenamePane),
         (&kb.edit_scrollback, NavigateAction::EditScrollback),
@@ -1448,6 +1492,7 @@ fn non_indexed_action_for_key(
         (&kb.swap_pane_up, NavigateAction::SwapPaneUp),
         (&kb.swap_pane_right, NavigateAction::SwapPaneRight),
         (&kb.last_pane, NavigateAction::LastPane),
+        (&kb.send_prefix, NavigateAction::SendPrefix),
         (&kb.cycle_pane_next, NavigateAction::CyclePaneNext),
         (&kb.cycle_pane_previous, NavigateAction::CyclePanePrevious),
         (&kb.split_vertical, NavigateAction::SplitVertical),
@@ -1632,6 +1677,10 @@ pub(super) fn execute_navigate_action_in_context(
             state.next_tab();
             leave_navigate_mode(state);
         }
+        NavigateAction::LastTab => {
+            state.last_tab();
+            leave_navigate_mode(state);
+        }
         NavigateAction::CloseTab => {
             if !state.close_tab() {
                 leave_navigate_mode(state);
@@ -1702,6 +1751,7 @@ pub(super) fn execute_navigate_action_in_context(
             state.last_pane();
             leave_navigate_mode(state);
         }
+        NavigateAction::SendPrefix => leave_command_mode(state),
         NavigateAction::Help => super::modal::open_keybind_help(state),
         NavigateAction::Settings => super::settings::open_settings(state),
         NavigateAction::ReloadConfig => {
@@ -2543,6 +2593,122 @@ last_pane = "prefix+tab"
     }
 
     #[test]
+    fn prefix_key_rhs_override_can_map_to_last_pane() {
+        // tmux-style: prefix is backtick, double-backtick jumps to the last pane.
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+prefix = "backtick"
+last_pane = "prefix+backtick"
+"#,
+        )
+        .unwrap();
+        let mut state = state_with_workspaces(&["test"]);
+        state.keybinds = config.keybinds();
+
+        let pane_action = action_for_key(
+            &state,
+            TerminalKey::new(KeyCode::Char('`'), KeyModifiers::empty()),
+            BindingDispatch::Prefix,
+        );
+
+        assert_eq!(pane_action, Some(NavigateAction::LastPane));
+    }
+
+    #[test]
+    fn prefix_key_rhs_override_can_map_to_last_tab() {
+        // tmux-style: prefix is backtick, double-backtick toggles the last tab.
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+prefix = "backtick"
+last_tab = "prefix+backtick"
+"#,
+        )
+        .unwrap();
+        let mut state = state_with_workspaces(&["test"]);
+        state.keybinds = config.keybinds();
+
+        let tab_action = action_for_key(
+            &state,
+            TerminalKey::new(KeyCode::Char('`'), KeyModifiers::empty()),
+            BindingDispatch::Prefix,
+        );
+
+        assert_eq!(tab_action, Some(NavigateAction::LastTab));
+    }
+
+    #[test]
+    fn send_prefix_binding_maps_to_navigation_action() {
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+send_prefix = "prefix+e"
+edit_scrollback = "prefix+shift+e"
+"#,
+        )
+        .unwrap();
+        let mut state = state_with_workspaces(&["test"]);
+        state.keybinds = config.keybinds();
+
+        let action = action_for_key(
+            &state,
+            TerminalKey::new(KeyCode::Char('e'), KeyModifiers::empty()),
+            BindingDispatch::Prefix,
+        );
+
+        assert_eq!(action, Some(NavigateAction::SendPrefix));
+    }
+
+    #[test]
+    fn send_prefix_hint_defaults_to_prefix_key_double_press() {
+        // Default config: no send_prefix binding, prefix+prefix unbound, so
+        // double-pressing the prefix still sends a literal prefix.
+        let state = state_with_workspaces(&["test"]);
+        let expected = crate::config::format_key_combo((state.prefix_code, state.prefix_mods));
+        assert_eq!(state.send_prefix_hint(), Some(expected));
+    }
+
+    #[test]
+    fn send_prefix_hint_prefers_explicit_send_prefix_binding() {
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+prefix = "backtick"
+last_tab = "prefix+backtick"
+send_prefix = "prefix+e"
+"#,
+        )
+        .unwrap();
+        let mut state = state_with_workspaces(&["test"]);
+        state.keybinds = config.keybinds();
+        state.prefix_code = KeyCode::Char('`');
+        state.prefix_mods = KeyModifiers::empty();
+
+        assert_eq!(state.send_prefix_hint(), Some("e".to_string()));
+    }
+
+    #[test]
+    fn send_prefix_hint_hidden_when_double_press_rebound_without_send_prefix() {
+        // prefix+prefix is claimed by last_tab and no send_prefix is set, so
+        // there is no key that sends a literal prefix; the hint disappears.
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+prefix = "backtick"
+last_tab = "prefix+backtick"
+"#,
+        )
+        .unwrap();
+        let mut state = state_with_workspaces(&["test"]);
+        state.keybinds = config.keybinds();
+        state.prefix_code = KeyCode::Char('`');
+        state.prefix_mods = KeyModifiers::empty();
+
+        assert_eq!(state.send_prefix_hint(), None);
+    }
+
+    #[test]
     fn terminal_direct_indexed_tab_shortcut_maps_to_navigation_action() {
         let mut state = state_with_workspaces(&["test"]);
         let config: Config = toml::from_str("[keys]\nswitch_tab = \"ctrl+3\"\n").unwrap();
@@ -2881,6 +3047,32 @@ navigate_pane_down = "ctrl+j"
         app.handle_key(TerminalKey::new(KeyCode::F(12), KeyModifiers::empty()))
             .await;
 
+        assert_eq!(app.state.mode, Mode::Terminal);
+    }
+
+    #[tokio::test]
+    async fn double_prefix_press_runs_user_binding_instead_of_literal_passthrough() {
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+prefix = "backtick"
+toggle_sidebar = "prefix+backtick"
+"#,
+        )
+        .unwrap();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(&config, true, None, api_rx, crate::api::EventHub::default());
+        app.state.workspaces = vec![Workspace::test_new("test")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        let sidebar_collapsed = app.state.sidebar_collapsed;
+
+        let backtick = TerminalKey::new(KeyCode::Char('`'), KeyModifiers::empty());
+        app.handle_key(backtick).await;
+        app.handle_key(backtick).await;
+
+        assert_eq!(app.state.sidebar_collapsed, !sidebar_collapsed);
         assert_eq!(app.state.mode, Mode::Terminal);
     }
 

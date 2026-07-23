@@ -165,6 +165,9 @@ pub struct Workspace {
     pub(crate) next_public_tab_number: usize,
     pub tabs: Vec<Tab>,
     pub active_tab: usize,
+    /// Root pane of the previously active tab, for last-tab toggling.
+    /// Root panes are stable across tab reorder and unrelated tab closes.
+    pub previous_active_tab: Option<PaneId>,
     #[cfg(test)]
     pub(crate) test_runtimes: HashMap<PaneId, TerminalRuntime>,
 }
@@ -225,6 +228,7 @@ impl Workspace {
             next_public_tab_number: 2,
             tabs: vec![tab],
             active_tab: 0,
+            previous_active_tab: None,
             #[cfg(test)]
             test_runtimes: HashMap::new(),
         }
@@ -408,6 +412,7 @@ impl Workspace {
                 next_public_tab_number: 2,
                 tabs: vec![tab],
                 active_tab: 0,
+                previous_active_tab: None,
                 #[cfg(test)]
                 test_runtimes: HashMap::new(),
             },
@@ -443,6 +448,9 @@ impl Workspace {
 
     pub fn switch_tab(&mut self, idx: usize) {
         if idx < self.tabs.len() {
+            if idx != self.active_tab {
+                self.previous_active_tab = self.tabs.get(self.active_tab).map(|tab| tab.root_pane);
+            }
             self.active_tab = idx;
             if let Some(tab) = self.tabs.get_mut(idx) {
                 for pane in tab.panes.values_mut() {
@@ -450,6 +458,17 @@ impl Workspace {
                 }
             }
         }
+    }
+
+    /// Index of the previously active tab, if it still exists and differs
+    /// from the current active tab.
+    pub fn last_tab_index(&self) -> Option<usize> {
+        let root_pane = self.previous_active_tab?;
+        let idx = self
+            .tabs
+            .iter()
+            .position(|tab| tab.root_pane == root_pane)?;
+        (idx != self.active_tab).then_some(idx)
     }
 
     pub fn create_tab(
@@ -1221,6 +1240,7 @@ impl Workspace {
             next_public_tab_number: 2,
             tabs: vec![tab],
             active_tab: 0,
+            previous_active_tab: None,
             test_runtimes: HashMap::new(),
         }
     }
@@ -1440,6 +1460,45 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switch_tab_records_previous_active_tab() {
+        let mut ws = Workspace::test_new("test");
+        let second = ws.test_add_tab(Some("two"));
+        let third = ws.test_add_tab(Some("three"));
+
+        ws.switch_tab(second);
+        ws.switch_tab(third);
+        assert_eq!(ws.last_tab_index(), Some(second));
+
+        // Switching to the already-active tab must not clobber history.
+        ws.switch_tab(third);
+        assert_eq!(ws.last_tab_index(), Some(second));
+    }
+
+    #[test]
+    fn last_tab_index_survives_tab_reorder() {
+        let mut ws = Workspace::test_new("test");
+        let second = ws.test_add_tab(Some("two"));
+        ws.switch_tab(second);
+
+        // Move the previously active first tab to the end; history follows
+        // the tab's root pane, not its index.
+        assert!(ws.move_tab(0, ws.tabs.len()));
+        assert_eq!(ws.last_tab_index(), Some(1));
+    }
+
+    #[test]
+    fn last_tab_index_is_none_when_previous_tab_is_closed() {
+        let mut ws = Workspace::test_new("test");
+        let second = ws.test_add_tab(Some("two"));
+        let third = ws.test_add_tab(Some("three"));
+        ws.switch_tab(second);
+        ws.switch_tab(third);
+
+        assert!(ws.close_tab(second));
+        assert_eq!(ws.last_tab_index(), None);
+    }
 
     #[test]
     fn generated_workspace_ids_are_short_base32_handles() {

@@ -333,6 +333,7 @@ pub struct Keybinds {
     pub rename_tab: ActionKeybinds,
     pub previous_tab: ActionKeybinds,
     pub next_tab: ActionKeybinds,
+    pub last_tab: ActionKeybinds,
     pub switch_tab: Vec<IndexedKeybind>,
     pub switch_workspace: Vec<IndexedKeybind>,
     pub close_tab: ActionKeybinds,
@@ -350,6 +351,7 @@ pub struct Keybinds {
     pub cycle_pane_next: ActionKeybinds,
     pub cycle_pane_previous: ActionKeybinds,
     pub last_pane: ActionKeybinds,
+    pub send_prefix: ActionKeybinds,
     pub split_vertical: ActionKeybinds,
     pub split_horizontal: ActionKeybinds,
     pub close_pane: ActionKeybinds,
@@ -495,6 +497,7 @@ impl Config {
             rename_tab: empty_action!(),
             previous_tab: empty_action!(),
             next_tab: empty_action!(),
+            last_tab: empty_action!(),
             switch_tab: Vec::new(),
             switch_workspace: Vec::new(),
             close_tab: empty_action!(),
@@ -512,6 +515,7 @@ impl Config {
             cycle_pane_next: empty_action!(),
             cycle_pane_previous: empty_action!(),
             last_pane: empty_action!(),
+            send_prefix: empty_action!(),
             split_vertical: empty_action!(),
             split_horizontal: empty_action!(),
             close_pane: empty_action!(),
@@ -626,6 +630,7 @@ impl Config {
             apply_action!(keybinds.rename_tab, rename_tab, source);
             apply_action!(keybinds.previous_tab, previous_tab, source);
             apply_action!(keybinds.next_tab, next_tab, source);
+            apply_action!(keybinds.last_tab, last_tab, source);
             apply_indexed!(
                 keybinds.switch_tab,
                 switch_tab,
@@ -651,6 +656,7 @@ impl Config {
             apply_action!(keybinds.swap_pane_up, swap_pane_up, source);
             apply_action!(keybinds.swap_pane_right, swap_pane_right, source);
             apply_action!(keybinds.last_pane, last_pane, source);
+            apply_action!(keybinds.send_prefix, send_prefix, source);
             apply_action!(keybinds.cycle_pane_next, cycle_pane_next, source);
             apply_action!(keybinds.cycle_pane_previous, cycle_pane_previous, source);
             apply_action!(keybinds.split_vertical, split_vertical, source);
@@ -1008,8 +1014,16 @@ fn reject_binding(
     diagnostics: &mut Vec<String>,
     source: BindingSource,
 ) -> bool {
-    if binding.trigger.is_prefix() && registry.prefix_rhs_is_reserved(binding.trigger.combo()) {
-        if source == BindingSource::Default && registry.prefix_source == BindingSource::User {
+    // Pressing the prefix twice sends a literal prefix key by default, so
+    // default bindings never claim the prefix RHS. An explicit user binding
+    // on prefix+prefix overrides the literal passthrough (tmux-style
+    // `bind-key <prefix> ...`); use `send_prefix` to keep a way to type the
+    // literal prefix key.
+    if binding.trigger.is_prefix()
+        && registry.prefix_rhs_is_reserved(binding.trigger.combo())
+        && source == BindingSource::Default
+    {
+        if registry.prefix_source == BindingSource::User {
             return true;
         }
         let diag = format!(
@@ -1744,7 +1758,7 @@ close_tab = "X"
     }
 
     #[test]
-    fn prefix_rhs_equal_to_configured_prefix_is_rejected() {
+    fn user_prefix_rhs_equal_to_configured_prefix_overrides_literal_passthrough() {
         let config: Config = toml::from_str(
             r#"
 [keys]
@@ -1754,12 +1768,13 @@ help = "prefix+ctrl+a"
         )
         .unwrap();
         let diagnostics = config.collect_diagnostics();
-        assert!(config.keybinds().help.bindings.is_empty());
-        assert!(diagnostics.iter().any(|diag| {
-            diag.contains("reserved keybinding")
-                && diag.contains("keys.help")
-                && diag.contains("keys.prefix")
-        }));
+        assert!(config
+            .keybinds()
+            .help
+            .matches_prefix_key(TerminalKey::new(KeyCode::Char('a'), KeyModifiers::CONTROL)));
+        assert!(!diagnostics
+            .iter()
+            .any(|diag| diag.contains("reserved keybinding")));
 
         let config: Config = toml::from_str(
             r#"
@@ -1901,7 +1916,7 @@ navigate_workspace_down = "ctrl+a"
     }
 
     #[test]
-    fn custom_command_prefix_rhs_equal_to_configured_prefix_is_rejected() {
+    fn custom_command_prefix_rhs_equal_to_configured_prefix_overrides_literal_passthrough() {
         let config: Config = toml::from_str(
             r#"
 [keys]
@@ -1909,15 +1924,15 @@ prefix = "ctrl+b"
 
 [[keys.command]]
 key = "prefix+ctrl+b"
-command = "echo no"
+command = "echo hi"
 "#,
         )
         .unwrap();
         let diagnostics = config.collect_diagnostics();
-        assert!(config.keybinds().custom_commands.is_empty());
-        assert!(diagnostics.iter().any(|diag| {
-            diag.contains("reserved keybinding") && diag.contains("keys.command[0].key")
-        }));
+        assert_eq!(config.keybinds().custom_commands.len(), 1);
+        assert!(!diagnostics
+            .iter()
+            .any(|diag| diag.contains("reserved keybinding")));
     }
 
     #[test]

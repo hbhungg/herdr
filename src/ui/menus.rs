@@ -40,20 +40,24 @@ pub(super) fn render_prefix_overlay(app: &AppState, frame: &mut Frame, area: Rec
 
     let workspace_picker = prefix_rhs_label(&app.keybinds.workspace_picker);
     let help = prefix_rhs_label(&app.keybinds.help);
-    let prefix = crate::config::format_key_combo((app.prefix_code, app.prefix_mods));
 
-    let line = Line::from(vec![
+    let mut spans = vec![
         Span::styled(" PREFIX ", mode_style),
         Span::raw(" "),
         Span::styled("esc", key),
         Span::styled(" cancel  ", dim),
-        Span::styled(prefix, key),
-        Span::styled(" send prefix  ", dim),
+    ];
+    if let Some(send_prefix) = app.send_prefix_hint() {
+        spans.push(Span::styled(send_prefix, key));
+        spans.push(Span::styled(" send prefix  ", dim));
+    }
+    spans.extend([
         Span::styled(workspace_picker, key),
         Span::styled(" workspace nav  ", dim),
         Span::styled(help, key),
         Span::styled(" keybinds", dim),
     ]);
+    let line = Line::from(spans);
 
     let overlay_y = area.y + area.height.saturating_sub(1);
     let overlay_area = Rect::new(area.x, overlay_y, area.width, 1);
