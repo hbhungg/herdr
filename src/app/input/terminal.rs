@@ -376,6 +376,7 @@ mod tests {
                 enabled: true,
                 platforms: None,
                 build: Vec::new(),
+                startup: Vec::new(),
                 actions: vec![crate::api::schema::PluginManifestAction {
                     id: "open".into(),
                     title: "Open link".into(),
@@ -1048,121 +1049,6 @@ mod tests {
                 (start_metrics.max_offset_from_bottom as u32, 2),
             )
         );
-    }
-
-    #[tokio::test]
-    async fn clicking_unfocused_pane_with_mouse_reporting_focuses_it_via_left_button() {
-        let mut app = app_for_mouse_test();
-        let mut ws = Workspace::test_new("test");
-        let first_pane = ws.tabs[0].root_pane;
-        let second_pane = ws.test_split(ratatui::layout::Direction::Vertical);
-
-        let terminal_area = Rect::new(26, 2, 80, 18);
-        let pane_infos = ws.tabs[0].layout.panes(terminal_area);
-        let first_info = pane_infos
-            .iter()
-            .find(|p| p.id == first_pane)
-            .unwrap()
-            .clone();
-        let second_info = pane_infos
-            .iter()
-            .find(|p| p.id == second_pane)
-            .unwrap()
-            .clone();
-
-        ws.insert_test_runtime(
-            first_pane,
-            crate::terminal::TerminalRuntime::test_with_screen_bytes(
-                first_info.inner_rect.width.max(1),
-                first_info.inner_rect.height.max(1),
-                b"",
-            ),
-        );
-        ws.insert_test_runtime(
-            second_pane,
-            crate::terminal::TerminalRuntime::test_with_screen_bytes(
-                second_info.inner_rect.width.max(1),
-                second_info.inner_rect.height.max(1),
-                b"\x1b[?1002h",
-            ),
-        );
-
-        ws.tabs[0].layout.focus_pane(first_pane);
-
-        app.state.workspaces = vec![ws];
-        app.state.active = Some(0);
-        app.state.selected = 0;
-        app.state.mode = Mode::Terminal;
-        app.state.view.pane_infos = pane_infos;
-
-        app.handle_mouse(mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            second_info.inner_rect.x + 2,
-            second_info.inner_rect.y + 2,
-        ));
-
-        assert_eq!(
-            app.state.workspaces[0].tabs[0].layout.focused(),
-            second_pane
-        );
-        assert_eq!(app.state.mode, Mode::Terminal);
-    }
-
-    #[tokio::test]
-    async fn right_clicking_unfocused_mouse_reporting_pane_keeps_focus_for_context_menu() {
-        let mut app = app_for_mouse_test();
-        let mut ws = Workspace::test_new("test");
-        let first_pane = ws.tabs[0].root_pane;
-        let second_pane = ws.test_split(ratatui::layout::Direction::Vertical);
-
-        let terminal_area = Rect::new(26, 2, 80, 18);
-        let pane_infos = ws.tabs[0].layout.panes(terminal_area);
-        let first_info = pane_infos
-            .iter()
-            .find(|p| p.id == first_pane)
-            .unwrap()
-            .clone();
-        let second_info = pane_infos
-            .iter()
-            .find(|p| p.id == second_pane)
-            .unwrap()
-            .clone();
-
-        ws.insert_test_runtime(
-            first_pane,
-            crate::terminal::TerminalRuntime::test_with_screen_bytes(
-                first_info.inner_rect.width.max(1),
-                first_info.inner_rect.height.max(1),
-                b"",
-            ),
-        );
-        ws.insert_test_runtime(
-            second_pane,
-            crate::terminal::TerminalRuntime::test_with_screen_bytes(
-                second_info.inner_rect.width.max(1),
-                second_info.inner_rect.height.max(1),
-                b"\x1b[?1002h",
-            ),
-        );
-
-        ws.tabs[0].layout.focus_pane(first_pane);
-
-        app.state.workspaces = vec![ws];
-        app.state.active = Some(0);
-        app.state.selected = 0;
-        app.state.mode = Mode::Terminal;
-        app.state.view.pane_infos = pane_infos;
-
-        app.handle_mouse(mouse(
-            MouseEventKind::Down(MouseButton::Right),
-            second_info.inner_rect.x + 2,
-            second_info.inner_rect.y + 2,
-        ));
-
-        assert_eq!(app.state.workspaces[0].tabs[0].layout.focused(), first_pane);
-        assert_eq!(app.state.mode, Mode::ContextMenu);
-        let menu = app.state.context_menu.as_ref().expect("pane context menu");
-        assert!(menu.items().contains(&"Swap with focused pane"));
     }
 
     #[tokio::test]

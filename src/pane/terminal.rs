@@ -31,7 +31,7 @@ use super::{
         maybe_filter_primary_screen_scrollback_clear, parse_reported_cwd,
         restore_host_terminal_theme_if_needed, write_host_terminal_theme_selective,
         AgentOscStateTracker, DefaultColorEvent, DefaultColorEventTracker, DefaultColorOscTracker,
-        DefaultColorQuery, DefaultColorTrackedEvent, Osc52Forwarder, OscDebugTracker,
+        DefaultColorQuery, DefaultColorTrackedEvent, OscDebugTracker,
     },
     xtgettcap::{XtgettcapQueryTracker, XtgettcapResponse},
 };
@@ -161,7 +161,6 @@ pub(crate) struct GhosttyPaneCore {
     pub default_color_event_tracker: DefaultColorEventTracker,
     pub child_default_foreground_changed: bool,
     pub child_default_background_changed: bool,
-    pub osc52_forwarder: Osc52Forwarder,
     pub osc_debug_tracker: OscDebugTracker,
     pub agent_osc_state: AgentOscStateTracker,
     pub xtgettcap_query_tracker: XtgettcapQueryTracker,
@@ -915,7 +914,6 @@ impl GhosttyPaneTerminal {
                 default_color_event_tracker: DefaultColorEventTracker::default(),
                 child_default_foreground_changed: false,
                 child_default_background_changed: false,
-                osc52_forwarder: Osc52Forwarder::default(),
                 osc_debug_tracker: OscDebugTracker::default(),
                 agent_osc_state: AgentOscStateTracker::default(),
                 xtgettcap_query_tracker: XtgettcapQueryTracker::default(),
@@ -1049,6 +1047,9 @@ impl GhosttyPaneTerminal {
         };
 
         let _ = core.terminal.take_pwd_changes();
+        // Restored history may have exercised terminal callbacks before this live PTY write.
+        // Those writes must not be delivered as live pane output.
+        let _ = core.terminal.take_clipboard_writes();
         let default_color_observation = core.default_color_tracker.observe(bytes);
         if shell_pid > 0 && default_color_observation {
             if let Some(owner_pgid) = current_transient_default_color_owner(shell_pid) {
@@ -1060,8 +1061,6 @@ impl GhosttyPaneTerminal {
             }
         }
 
-        core.osc52_forwarder.observe(bytes);
-        let clipboard_writes = core.osc52_forwarder.drain_pending();
         core.osc_debug_tracker.observe(bytes);
         for event in core.osc_debug_tracker.drain_pending() {
             debug!(
@@ -1116,6 +1115,7 @@ impl GhosttyPaneTerminal {
             xtgettcap_responses,
             &mut terminal_responses,
         );
+        let clipboard_writes = core.terminal.take_clipboard_writes();
         let reported_cwd = core
             .terminal
             .take_pwd_changes()
@@ -2390,7 +2390,12 @@ fn ghostty_set_scroll_offset_from_bottom(
         return;
     };
     let max_offset = scrollbar.total.saturating_sub(scrollbar.len);
-    terminal.scroll_viewport_row(max_offset.saturating_sub(offset_from_bottom));
+    let offset_from_bottom = offset_from_bottom.min(max_offset);
+    if offset_from_bottom == 0 {
+        terminal.scroll_viewport_bottom();
+    } else {
+        terminal.scroll_viewport_row(max_offset - offset_from_bottom);
+    }
 }
 
 fn ghostty_extract_selection(
@@ -3214,6 +3219,38 @@ mod tests {
             latest.reported_cwd,
             Some(std::path::PathBuf::from("/tmp/iterm2"))
         );
+    }
+
+    #[test]
+    fn process_pty_bytes_surfaces_clipboard_writes_without_other_results() {
+        let (tx, _rx) = mpsc::channel(4);
+        let terminal = crate::ghostty::Terminal::new(80, 24, 100).unwrap();
+        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap();
+
+        let result = pane.process_pty_bytes(
+            PaneId::from_raw(1),
+            0,
+            b"output\x1b]52;c;Y2xpcGJvYXJk\x07",
+            &tx,
+        );
+
+        assert!(result.request_render);
+        assert_eq!(result.render_delay, None);
+        assert_eq!(result.clipboard_writes, vec![b"clipboard".to_vec()]);
+        assert_eq!(result.reported_cwd, None);
+        assert!(result.terminal_responses.is_empty());
+    }
+
+    #[test]
+    fn seeded_history_clipboard_write_does_not_leak_into_live_output() {
+        let (tx, _rx) = mpsc::channel(4);
+        let terminal = crate::ghostty::Terminal::new(80, 24, 100).unwrap();
+        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap();
+        pane.seed_history_ansi("\x1b]52;c;c3RhbGU=\x07");
+
+        let result = pane.process_pty_bytes(PaneId::from_raw(1), 0, b"live output", &tx);
+
+        assert!(result.clipboard_writes.is_empty());
     }
 
     #[test]
@@ -4190,6 +4227,49 @@ mod tests {
         }
 
         assert!(pane.visible_text().contains("000000"));
+    }
+
+    #[test]
+    fn empty_or_short_resize_keeps_following_bottom_when_output_creates_scrollback() {
+        for initial in [b"".as_slice(), b"seed\r\n".as_slice()] {
+            let (tx, _rx) = mpsc::channel(4);
+            let mut terminal = crate::ghostty::Terminal::new(10, 3, 100).unwrap();
+            terminal.write(initial);
+            let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap();
+            let pane_id = PaneId::from_raw(1);
+
+            pane.resize(3, 10, 0, 0);
+            pane.process_pty_bytes(
+                pane_id,
+                0,
+                b"000000\r\n000001\r\n000002\r\n000003\r\n000004",
+                &tx,
+            );
+
+            let metrics = pane.scroll_metrics().expect("scroll metrics after output");
+            assert_eq!(metrics.offset_from_bottom, 0);
+            assert!(pane.visible_text().contains("000004"));
+        }
+    }
+
+    #[test]
+    fn resize_that_removes_scrollback_restores_live_follow() {
+        let (tx, _rx) = mpsc::channel(4);
+        let mut terminal = crate::ghostty::Terminal::new(10, 3, 100).unwrap();
+        terminal.write(b"000000\r\n000001\r\n000002\r\n000003\r\n000004");
+        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap();
+        let pane_id = PaneId::from_raw(1);
+
+        pane.set_scroll_offset_from_bottom(1);
+        pane.resize(5, 10, 0, 0);
+        let resized = pane.scroll_metrics().expect("scroll metrics after resize");
+        assert_eq!(resized.max_offset_from_bottom, 0);
+
+        pane.process_pty_bytes(pane_id, 0, b"\r\n000005\r\n000006", &tx);
+
+        let metrics = pane.scroll_metrics().expect("scroll metrics after output");
+        assert_eq!(metrics.offset_from_bottom, 0);
+        assert!(pane.visible_text().contains("000006"));
     }
 
     #[test]
