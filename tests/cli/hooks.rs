@@ -83,6 +83,8 @@ fn run_shell_hook_with_env(
         .env("HERDR_ENV", "1")
         .env("HERDR_SOCKET_PATH", &socket_path)
         .env("HERDR_PANE_ID", "p_test")
+        .env_remove("CODEX_THREAD_ID")
+        .env_remove("CURSOR_VERSION")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -150,16 +152,67 @@ fn claude_hook_reports_session_id_from_stdin() {
 }
 
 #[test]
-fn codex_hook_reports_session_id_from_stdin() {
+fn claude_hook_ignores_cursor_compatibility_payloads() {
+    assert!(run_claude_hook(
+        "session",
+        r#"{"hook_event_name":"sessionStart","session_id":"cursor-session"}"#,
+    )
+    .is_none());
+
+    assert!(run_claude_hook(
+        "session",
+        r#"{"hook_event_name":"SessionStart","session_id":"cursor-session","cursor_version":"2026.08.11-e8db854"}"#,
+    )
+    .is_none());
+
+    for cursor_version in ["2026.08.11-e8db854", ""] {
+        assert!(run_shell_hook_with_env(
+            "src/integration/assets/claude/herdr-agent-state.sh",
+            &["session"],
+            r#"{"hook_event_name":"SessionStart","session_id":"cursor-session"}"#,
+            &[("CURSOR_VERSION", cursor_version)],
+        )
+        .is_none());
+    }
+}
+
+#[test]
+fn codex_hook_reports_persisted_root_session_and_ignores_ephemeral_or_nested_sessions() {
     let request = run_codex_hook(
         "session",
-        r#"{"hook_event_name":"SessionStart","session_id":"codex-session"}"#,
+        r#"{"hook_event_name":"SessionStart","session_id":"codex-session","transcript_path":"/tmp/codex-session.jsonl"}"#,
     )
     .expect("codex hook should report session identity");
 
     assert_eq!(request["method"], "pane.report_agent_session");
     assert_eq!(request["params"]["agent_session_id"], "codex-session");
     assert!(request["params"].get("state").is_none());
+
+    let matching_request = run_shell_hook_with_env(
+        "src/integration/assets/codex/herdr-agent-state.sh",
+        &["session"],
+        r#"{"hook_event_name":"SessionStart","session_id":"codex-session","transcript_path":"/tmp/codex-session.jsonl"}"#,
+        &[("CODEX_THREAD_ID", "codex-session")],
+    )
+    .expect("matching inherited session should still report");
+    assert_eq!(
+        matching_request["params"]["agent_session_id"],
+        "codex-session"
+    );
+
+    assert!(run_codex_hook(
+        "session",
+        r#"{"hook_event_name":"SessionStart","session_id":"side-session","transcript_path":null}"#,
+    )
+    .is_none());
+
+    assert!(run_shell_hook_with_env(
+        "src/integration/assets/codex/herdr-agent-state.sh",
+        &["session"],
+        r#"{"hook_event_name":"SessionStart","session_id":"nested-session","transcript_path":"/tmp/nested-session.jsonl"}"#,
+        &[("CODEX_THREAD_ID", "parent-session")],
+    )
+    .is_none());
 }
 
 #[test]
